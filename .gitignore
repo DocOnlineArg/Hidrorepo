@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+firmware/esp32/.pio/
+firmware/esp32/test/native/build/
+*.log
+.DS_Store
