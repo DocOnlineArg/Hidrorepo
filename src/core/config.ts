@@ -48,6 +48,8 @@ export function createEmptyProfile(id: ProfileId): ProfileConfig {
   };
 }
 
+const ALARM_HYST: Record<SensorId, number> = { ph: 0.05, ec: 0.02, orp: 5, airTemp: 0.3, rh: 1, waterTemp: 0.2 };
+
 function sensor(
   id: SensorId,
   label: string,
@@ -71,6 +73,7 @@ function sensor(
     staleAfterS: 30,
     stuckDetectS: 300,
     stabilityWindowS: 60,
+    alarmHysteresis: ALARM_HYST[id],
     decimals,
   };
 }
@@ -221,9 +224,9 @@ export function createDefaultConfig(): SystemConfig {
       roomVolumeM3: 6,
       heatCapacityJPerK: 70000,
       envelopeUA: 15,
-      lightsPowerW: 600,
+      lightsPowerW: 400,
       lightsHeatFraction: 0.9,
-      fanFlowM3h: 300,
+      fanFlowM3h: 180,
       leakACH: 0.5,
       humidifierGPerH: 300,
       dehumidifierGPerH: 500,

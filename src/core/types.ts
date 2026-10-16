@@ -78,6 +78,8 @@ export interface SensorConfig {
   stuckDetectS: number;
   /** Ventana (s) usada para evaluar estabilidad antes de decidir. */
   stabilityWindowS: number;
+  /** Histéresis para normalizar alarmas de límite (unidades del sensor). */
+  alarmHysteresis: number;
   decimals: number;
 }
 

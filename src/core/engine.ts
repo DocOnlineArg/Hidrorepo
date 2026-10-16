@@ -142,6 +142,7 @@ export class Engine {
   private store: ConfigStore | null;
   private initial: InitialConditions;
   private lastInterlock = false;
+  private sensorBadAt: Partial<Record<SensorId, number>> = {};
 
   constructor(opts: EngineOptions = {}) {
     this.store = opts.store ?? null;
@@ -164,6 +165,7 @@ export class Engine {
     this.gate = new OutputGate(this.hardware);
     this.drivers = this.createDrivers();
     if (saved) this.restore(saved);
+    this.sampleSensors();
     this.log.add(this.t, 'system', 'Motor', saved ? 'Motor iniciado: configuración restaurada desde almacenamiento' : 'Motor iniciado con configuración por defecto (sin objetivos)');
   }
 
@@ -333,6 +335,11 @@ export class Engine {
       this.enterEngineFault(err);
     }
     this.bump();
+  }
+
+  /** Muestreo sin avanzar el tiempo (estado inicial coherente). */
+  sampleSensors(): void {
+    for (const id of SENSOR_IDS) processSample(this.config.sensors[id], this.sensors[id], this.drivers[id].sample(this.t));
   }
 
   private enterEngineFault(err: unknown): void {
@@ -552,7 +559,9 @@ export class Engine {
     for (const id of SENSOR_IDS) {
       const r = this.sensors[id].reading;
       const label = this.config.sensors[id].label;
-      const bad = r.status !== 'ok';
+      if (r.status !== 'ok') this.sensorBadAt[id] = t;
+      // Se normaliza solo tras 10 s seguidos en estado correcto (evita oscilación).
+      const bad = r.status !== 'ok' || (this.alarms.isActive(`SENSOR_${id}`) && t - (this.sensorBadAt[id] ?? 0) < 10_000);
       const sev = r.status === 'uncalibrated' ? 'info' : r.status === 'suspect' ? 'warning' : 'critical';
       this.alarms.set(t, bad, {
         key: `SENSOR_${id}`,
@@ -568,22 +577,29 @@ export class Engine {
       const v = isUsable(r) ? (r.value as number) : null;
       const lo = band?.alarmLow ?? null;
       const hi = band?.alarmHigh ?? null;
-      this.alarms.set(t, v !== null && lo !== null && v < lo, {
-        key: `LIMIT_${id}_LOW`,
+      const hy = this.config.sensors[id].alarmHysteresis;
+      const dec = this.config.sensors[id].decimals;
+      // Histéresis: se activa al cruzar el límite y se normaliza solo al volver `hy` dentro.
+      const lowKey = `LIMIT_${id}_LOW`;
+      const highKey = `LIMIT_${id}_HIGH`;
+      const lowOn = v !== null && lo !== null && (v < lo || (this.alarms.isActive(lowKey) && v < lo + hy));
+      const highOn = v !== null && hi !== null && (v > hi || (this.alarms.isActive(highKey) && v > hi - hy));
+      this.alarms.set(t, lowOn, {
+        key: lowKey,
         code: 'LIMIT_LOW',
         severity: 'warning',
         source: label,
         message: `${label} por debajo del límite configurado`,
-        cause: `${v?.toFixed(this.config.sensors[id].decimals)} < ${lo}`,
+        cause: `${v?.toFixed(dec)} < ${lo}`,
         actionTaken: 'Registro y aviso; el control actúa solo si hay acción permitida',
       });
-      this.alarms.set(t, v !== null && hi !== null && v > hi, {
-        key: `LIMIT_${id}_HIGH`,
+      this.alarms.set(t, highOn, {
+        key: highKey,
         code: 'LIMIT_HIGH',
         severity: 'warning',
         source: label,
         message: `${label} por encima del límite configurado`,
-        cause: `${v?.toFixed(this.config.sensors[id].decimals)} > ${hi}`,
+        cause: `${v?.toFixed(dec)} > ${hi}`,
         actionTaken: 'Registro y aviso; el control actúa solo si hay acción permitida',
       });
     }
@@ -836,6 +852,11 @@ export class Engine {
     this.bump();
   }
 
+  /** Selecciona el hardware simulado acoplado al modelo físico (sin placa). */
+  attachMockBackend(): void {
+    this.attachBackend(new MockHardwareBackend(() => this.rawForMock()));
+  }
+
   /** Habilitación deliberada de salidas físicas. */
   arm(phrase: string, checklistComplete: boolean): Verdict {
     const reasons: string[] = [];
@@ -966,6 +987,11 @@ export class Engine {
     this.bump();
   }
 
+  acknowledgeAlarm(id: number): void {
+    this.alarms.acknowledge(this.t, id);
+    this.bump();
+  }
+
   resetLoop(id: LoopId): void {
     this.chem.resetLoop(id, this.t);
     this.alarms.clear(this.t, `LOOP_LOCKOUT_${id}`);
@@ -1037,6 +1063,7 @@ export class Engine {
     this.lightsOverTemp = false;
     this.commanded = allOff();
     this.running = false;
+    this.sampleSensors();
     this.bump();
   }
 
