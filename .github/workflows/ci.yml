@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  web:
+    name: Simulador y dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  firmware-native:
+    name: Seguridad del firmware (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash firmware/esp32/test/run_native.sh
+
+  firmware-esp32:
+    name: Compilación ESP32 (PlatformIO)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/esp32/.pio/libdeps
+          key: pio-${{ hashFiles('firmware/esp32/platformio.ini') }}
+      - run: pip install platformio
+      - run: pio run
+        working-directory: firmware/esp32
