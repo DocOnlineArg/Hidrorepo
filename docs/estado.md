@@ -1,4 +1,4 @@
-# Estado del proyecto (v0.1.0)
+# Estado del proyecto (v0.2.0)
 
 ## Qué funciona realmente
 
@@ -25,6 +25,11 @@
   local), backend WebSocket para ESP32 y protocolo v1 con validación estricta.
 - **Dashboard** responsive (escritorio y móvil, verificado con Chromium a 1400 px y 390 px sin
   desbordamiento horizontal ni errores de consola), modo claro/oscuro.
+- **Autenticación** desafío-respuesta HMAC-SHA256 con token de emparejamiento (el token no viaja).
+- **Configuración remota** del firmware (timeout de heartbeat, máximos duros por bomba, Wi-Fi),
+  validada en el dispositivo y solo con salidas desarmadas.
+- **Asistente de calibración de caudal** (prueba a probeta; en simulación cada bomba tiene un caudal
+  real distinto del nominal, como ocurre con peristálticas reales).
 - **Firmware**: capa de seguridad portable (`OutputSafety`) probada en host; `main.cpp` con
   arranque seguro, watchdog, NVS, Wi-Fi STA/AP, WebSocket, drivers EZO/SHT4x/DS18B20 no bloqueantes.
 
@@ -41,10 +46,12 @@
 
 | Conjunto | Resultado |
 |---|---|
-| `npm test` (Vitest): 12 requisitos de la sección 11 (25 casos) + módulos (19 casos) | **44/44 OK** |
-| `npm run test:firmware` (g++ C++17, -Wall -Wextra -Werror) | **51/51 comprobaciones OK** |
+| `npm test` (Vitest): 12 requisitos de la sección 11 (25 casos) + módulos (23 casos) | **48/48 OK** |
+| `npm run test:firmware` (g++ C++17, -Wall -Wextra -Werror) | **62/62 comprobaciones OK** |
 | `npm run build` (typecheck estricto + Vite) | OK |
-| Compilación del firmware para ESP32 (`pio run`) | **No ejecutada**: la red del entorno de desarrollo bloqueó el registro de PlatformIO. Debe compilarse localmente. |
+| Compilación del firmware para ESP32 (`pio run`, en GitHub Actions) | OK (v0.1: RAM 14 %, flash 62 %) |
+
+Todo lo anterior se ejecuta automáticamente en GitHub Actions en cada push (`.github/workflows/ci.yml`).
 
 Correspondencia con los requisitos: ver `tests/requirements.test.ts` (un `describe` por requisito).
 
@@ -62,6 +69,7 @@ Correspondencia con los requisitos: ver `tests/requirements.test.ts` (un `descri
    método de verificación independiente (el ORP no basta).
 9. Instalación eléctrica de red realizada y certificada por un profesional (diferencial,
    protecciones, envolvente, puesta a tierra).
-10. Añadir autenticación al protocolo antes de conectar la ESP32 a una red compartida.
+10. La autenticación HMAC ya está implementada, pero el canal no está cifrado: mantenga la ESP32
+    en una red aislada.
 11. Ajustar los parámetros de clima (tiempos mínimos del compresor del deshumidificador, etc.) a
     las especificaciones de cada equipo.

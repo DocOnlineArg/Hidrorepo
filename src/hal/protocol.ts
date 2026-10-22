@@ -1,16 +1,23 @@
 /**
  * Protocolo JSON ESP32 ⇄ dashboard (WebSocket, un mensaje JSON por trama).
- * Versión 1. Documentado en docs/protocolo.md. El firmware implementa el mismo
+ * Versión 2 (añade autenticación y configuración remota). Documentado en docs/protocolo.md. El firmware implementa el mismo
  * contrato en firmware/esp32/src/main.cpp.
  */
 import type { OutputId, PumpId, SensorId } from '../core/types';
 import { OUTPUT_IDS, SENSOR_IDS } from '../core/types';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export interface SensorSample {
   raw: number | null;
   ok: boolean;
+}
+
+/** Configuración persistente del dispositivo (NVS). */
+export interface DeviceConfig {
+  hbTimeoutMs: number;
+  /** Máximo duro ON por bomba (ms), en el orden de PUMP_IDS. */
+  pumpMaxMs: number[];
 }
 
 export interface HelloMsg {
@@ -19,6 +26,9 @@ export interface HelloMsg {
   fw: string;
   board: string;
   resetReason: string;
+  /** Desafío para la autenticación HMAC (hex). */
+  nonce: string;
+  config: DeviceConfig | null;
 }
 
 export interface TelemetryMsg {
@@ -59,7 +69,24 @@ export interface ArmCmd {
   /** Frase de confirmación; el firmware exige 'ARMAR' para habilitar salidas. */
   token: string;
 }
-export type HostMsg = HeartbeatCmd | OutputsCmd | ArmCmd;
+/** Respuesta al desafío: mac = hex(HMAC-SHA256(token, nonce)). */
+export interface AuthCmd {
+  type: 'auth';
+  seq: number;
+  mac: string;
+}
+/** Cambio de configuración persistente; el dispositivo exige estar desarmado. */
+export interface ConfigCmd {
+  type: 'config';
+  seq: number;
+  hbTimeoutMs?: number;
+  pumpMaxMs?: number[];
+  wifi?: { ssid: string; pass: string };
+}
+export type HostMsg = HeartbeatCmd | OutputsCmd | ArmCmd | AuthCmd | ConfigCmd;
+
+/** Límites que el firmware también valida. */
+export const DEVICE_LIMITS = { hbTimeoutMs: [1000, 10000], pumpMaxMs: [1000, 300000] } as const;
 
 export function encodeHost(msg: HostMsg): string {
   return JSON.stringify(msg);
@@ -79,8 +106,20 @@ export function parseDevice(text: string): DeviceMsg | { error: string } {
   switch (o.type) {
     case 'hello':
       if (typeof o.proto !== 'number' || typeof o.fw !== 'string') return { error: 'hello incompleto' };
-      if (o.proto !== PROTOCOL_VERSION) return { error: `Versión de protocolo no soportada (${o.proto})` };
-      return { type: 'hello', proto: o.proto, fw: o.fw, board: String(o.board ?? ''), resetReason: String(o.resetReason ?? '') };
+      if (o.proto !== PROTOCOL_VERSION) return { error: `Versión de protocolo no soportada (${o.proto}); se requiere ${PROTOCOL_VERSION}` };
+      if (typeof o.nonce !== 'string' || !/^[0-9a-f]{16,64}$/.test(o.nonce)) return { error: 'hello sin desafío válido' };
+      let config: DeviceConfig | null = null;
+      if (isObj(o.config) && typeof o.config.hbTimeoutMs === 'number' && Array.isArray(o.config.pumpMaxMs))
+        config = { hbTimeoutMs: o.config.hbTimeoutMs, pumpMaxMs: o.config.pumpMaxMs.map(Number) };
+      return {
+        type: 'hello',
+        proto: o.proto,
+        fw: o.fw,
+        board: String(o.board ?? ''),
+        resetReason: String(o.resetReason ?? ''),
+        nonce: o.nonce,
+        config,
+      };
     case 'telemetry': {
       if (typeof o.seq !== 'number' || !isObj(o.sensors) || !isObj(o.outputs)) return { error: 'telemetry incompleta' };
       const sensors: Partial<Record<SensorId, SensorSample>> = {};

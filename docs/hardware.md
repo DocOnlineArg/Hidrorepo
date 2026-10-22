@@ -91,20 +91,25 @@ El dashboard no cambia: solo se sustituye el backend (`HardwareBackend`) y los s
 leer telemetría real por el mismo pipeline (calibración, validación, filtro).
 
 1. **Banco sin cargas.** Monte ESP32 + EZO + SHT4x + DS18B20 sin bombas ni red. Pase cada EZO a
-   I²C. Compile y cargue: `cd firmware/esp32 && pio run -t upload`. Configure Wi-Fi en NVS
-   (`wifi_ssid`, `wifi_pass`) o use el AP `HidroTwin` (cambie `ap_pass`).
+   I²C. Compile y cargue: `cd firmware/esp32 && pio run -t upload`. La primera vez la placa
+   crea el punto de acceso `HidroTwin` (clave `hidrotwin-setup`; cámbiela en NVS `ap_pass`) y
+   el dashboard se conecta a `ws://192.168.4.1:81/`.
 2. **Pruebas nativas** de la capa de seguridad: `npm run test:firmware`.
 3. **Hardware simulado primero.** En el dashboard: *Hardware → Hardware simulado → Entrar en modo
    hardware*. Recorra armado, E-STOP, pérdida de enlace (*Laboratorio*) y verifique que todo
    se apaga.
-4. **Conectar la ESP32 real.** *Hardware → URL `ws://<ip>:81/` → ESP32 real*. Las salidas siguen
+4. **Conectar la ESP32 real.** Lea el token de emparejamiento en el monitor serie
+   (`pio device monitor`). *Hardware → URL `ws://<ip>:81/` + token → ESP32 real*. El estado debe
+   pasar a "autenticado". Desde *Configuración persistente del dispositivo* puede copiar los
+   tiempos máximos de las bombas al firmware y guardar la red Wi-Fi. Las salidas siguen
    desarmadas. Compruebe que llegan lecturas (`source = HARDWARE`) y que un sensor desconectado
    se detecta.
 5. **Calibración real** con soluciones patrón (pH 7/4, EC 1413 µS/cm, ORP 225 mV). Recomendado:
    calibrar en el propio EZO (con compensación de temperatura) y repetir la calibración del
    dashboard como verificación (debe salir ganancia ≈ 1, offset ≈ 0).
 6. **Salidas con cargas ficticias** (LED/lámpara de 12 V) y luego bombas con **agua**. Mida el
-   caudal real de cada bomba (mL en 60 s) y configúrelo. Complete la lista de verificación y arme.
+   caudal real de cada bomba con el asistente *Dosificación → Calibrar caudal* (descarga a
+   probeta durante N s, introduce los mL leídos y calcula el caudal). Complete la lista de verificación y arme.
 7. **Identificar los modelos de respuesta**: con agua y producto real, dosis pequeñas y medición
    tras mezcla; introduzca las estimaciones del controlador (*Automatización*) y, si quiere
    reproducirlo en la simulación, el modelo del líquido (*Configuración*).

@@ -185,7 +185,7 @@ export interface PumpConfig {
   enabled: boolean;
 }
 
-export type DoseOrigin = 'auto' | 'manual_test' | 'manual_hold' | 'prime';
+export type DoseOrigin = 'auto' | 'manual_test' | 'manual_hold' | 'prime' | 'calibration';
 
 export interface PumpRuntime {
   running: boolean;
@@ -203,6 +203,9 @@ export interface PumpRuntime {
   totalDosedMl: number;
   opCount: number;
   lastOpMl: number;
+  /** Volumen entregado en la última prueba de caudal (a probeta, no al depósito). */
+  lastCalibrationMl: number | null;
+  lastCalibrationS: number | null;
   /** Registro (t, mL) para límites diarios. */
   doseLog: { t: number; ml: number; origin: DoseOrigin }[];
 }

@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useEngine } from '../context';
-import { Card, Check, Chip, Field, Reasons, TextInput } from '../components/common';
+import { Card, Check, Chip, Field, NumInput, Reasons, TextInput } from '../components/common';
 import { Esp32WsBackend } from '../../hal/esp32Ws';
 import { PIN_MAP } from '../../hal/pinmap';
-import { OUTPUT_IDS } from '../../core/types';
+import { OUTPUT_IDS, PUMP_IDS } from '../../core/types';
 import { formatDuration } from '../../core/util';
 
 const CHECKLIST = [
@@ -18,6 +18,7 @@ const CHECKLIST = [
 export function HardwareView() {
   const { engine: e } = useEngine();
   const [url, setUrl] = useState<string | null>('ws://192.168.4.1:81/');
+  const [token, setToken] = useState('');
   const [checks, setChecks] = useState<boolean[]>(CHECKLIST.map(() => false));
   const [phrase, setPhrase] = useState('');
   const [result, setResult] = useState<string[] | null>(null);
@@ -46,17 +47,24 @@ export function HardwareView() {
             <Field label="URL WebSocket de la ESP32">
               <TextInput value={url} onCommit={setUrl} width={220} />
             </Field>
+            <Field label="Token de emparejamiento">
+              <input type="password" value={token} onChange={(ev) => setToken(ev.target.value)} autoComplete="off" placeholder="ver puerto serie" style={{ width: 150 }} />
+            </Field>
             <button
               className={`btn ${e.hardware.kind === 'esp32-ws' ? 'on' : ''}`}
-              disabled={!url}
+              disabled={!url || token.length < 8}
+              title={token.length < 8 ? 'Introduzca el token que la ESP32 muestra por el puerto serie' : undefined}
               onClick={() => {
                 if (!confirm('Seleccionar una ESP32 FÍSICA. Las salidas seguirán desarmadas hasta la habilitación explícita. ¿Continuar?')) return;
-                e.attachBackend(new Esp32WsBackend(url!));
+                e.attachBackend(new Esp32WsBackend(url!, token));
               }}
             >
               ESP32 real (WebSocket)
             </button>
           </div>
+          <small>
+            El token nunca se envía por la red: la ESP32 manda un desafío aleatorio y el dashboard responde con HMAC-SHA256. El token no se guarda en el navegador.
+          </small>
           <small>El hardware simulado emula una ESP32 (enlace, telemetría, armado, watchdog y corte por tiempo máximo) acoplada al modelo físico.</small>
           <div className="row">
             {e.mode !== 'hardware' ? (
@@ -76,6 +84,10 @@ export function HardwareView() {
             </dd>
             <dt>Conexión</dt>
             <dd>{e.mode === 'hardware' ? (L.connected ? <Chip tone="ok">conectado</Chip> : <Chip tone="bad">desconectado</Chip>) : '—'}</dd>
+            <dt>Autenticación</dt>
+            <dd>
+              {e.mode !== 'hardware' ? '—' : L.authenticated ? <Chip tone="ok">autenticado</Chip> : <Chip tone="bad">{L.authError ?? 'pendiente'}</Chip>}
+            </dd>
             <dt>Último heartbeat</dt>
             <dd>{e.mode === 'hardware' && hbAge !== null ? `hace ${formatDuration(hbAge)}` : '—'}</dd>
             <dt>Firmware</dt>
@@ -120,6 +132,7 @@ export function HardwareView() {
           {result && (result.length ? <Reasons reasons={result} /> : <div className="note warn">Salidas armadas. Supervise la instalación.</div>)}
         </Card>
       </div>
+      <DeviceConfigCard />
       <div className="grid wide">
         <Card title="Salidas: ordenadas vs reportadas">
           <div className="table-wrap">
@@ -172,5 +185,82 @@ export function HardwareView() {
         </Card>
       </div>
     </>
+  );
+}
+
+function DeviceConfigCard() {
+  const { engine: e } = useEngine();
+  const L = e.hardware.link();
+  const dc = L.deviceConfig;
+  const [hb, setHb] = useState<number | null>(dc?.hbTimeoutMs ?? null);
+  const [pmax, setPmax] = useState<(number | null)[]>(dc?.pumpMaxMs.map((v) => v / 1000) ?? PUMP_IDS.map(() => null));
+  const [ssid, setSsid] = useState('');
+  const [pass, setPass] = useState('');
+  const [sent, setSent] = useState(false);
+  const dcKey = JSON.stringify(dc);
+  useEffect(() => {
+    if (!dc) return;
+    setHb(dc.hbTimeoutMs);
+    setPmax(dc.pumpMaxMs.map((v) => v / 1000));
+  }, [dcKey]);
+  const result = sent ? e.hardware.lastConfigResult() : null;
+  const usable = e.mode === 'hardware' && L.connected && L.authenticated;
+  const fromHost = () => setPmax(PUMP_IDS.map((id) => e.config.pumps[id].maxRunS));
+  return (
+    <Card title="Configuración persistente del dispositivo (NVS)">
+      <p className="note">
+        Límites que el FIRMWARE aplica por su cuenta aunque el dashboard falle. Solo se pueden cambiar con las salidas desarmadas; el dispositivo valida los rangos (heartbeat 1–10 s, bomba 1–300 s). Las credenciales Wi-Fi se aplican al reiniciar la placa.
+      </p>
+      {!usable && <small>Disponible en modo hardware con un dispositivo conectado y autenticado.</small>}
+      <div className="fields">
+        <Field label="Timeout de heartbeat" unit="ms">
+          <NumInput value={hb} min={1000} max={10000} allowNull onCommit={setHb} />
+        </Field>
+        {PUMP_IDS.map((id, i) => (
+          <Field key={id} label={`Máx. ${e.config.liquids[id].name}`} unit="s">
+            <NumInput value={pmax[i]} min={1} max={300} allowNull width={70} onCommit={(v) => setPmax((x) => x.map((y, j) => (j === i ? v : y)))} />
+          </Field>
+        ))}
+      </div>
+      <div className="row">
+        <button className="btn small" onClick={fromHost}>
+          Copiar tiempos máximos del dashboard
+        </button>
+        <button
+          className="btn small primary"
+          disabled={!usable || e.link.armed || hb === null || pmax.some((v) => v === null)}
+          onClick={() => {
+            e.hardware.sendConfig({ hbTimeoutMs: hb as number, pumpMaxMs: pmax.map((v) => Math.round((v as number) * 1000)) });
+            setSent(true);
+          }}
+        >
+          Enviar límites al dispositivo
+        </button>
+      </div>
+      <div className="fields">
+        <Field label="Wi-Fi SSID">
+          <input type="text" value={ssid} onChange={(ev) => setSsid(ev.target.value)} autoComplete="off" />
+        </Field>
+        <Field label="Wi-Fi clave">
+          <input type="password" value={pass} onChange={(ev) => setPass(ev.target.value)} autoComplete="off" />
+        </Field>
+      </div>
+      <div className="row">
+        <button
+          className="btn small"
+          disabled={!usable || e.link.armed || !ssid}
+          onClick={() => {
+            if (!confirm(`Guardar la red "${ssid}" en la ESP32? Se usará en el próximo reinicio; si no conecta, la placa vuelve al punto de acceso HidroTwin.`)) return;
+            e.hardware.sendConfig({ wifi: { ssid, pass } });
+            setPass('');
+            setSent(true);
+          }}
+        >
+          Guardar Wi-Fi en el dispositivo
+        </button>
+      </div>
+      {result && <div className={`note ${result.ok ? '' : 'bad'}`}>{result.ok ? 'Configuración aceptada y guardada por el dispositivo.' : `Rechazada: ${result.error}`}</div>}
+      {sent && !result && <small>Esperando respuesta del dispositivo…</small>}
+    </Card>
   );
 }

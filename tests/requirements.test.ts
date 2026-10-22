@@ -33,7 +33,17 @@ class SpyPhysicalBackend implements HardwareBackend {
     this.now = now;
   }
   link(): BackendLink {
-    return { connected: this.connected, lastHeartbeatAt: this.now, firmware: 'spy', deviceArmed: false, estop: false, faults: [] };
+    return {
+      connected: this.connected,
+      authenticated: this.connected,
+      authError: null,
+      deviceConfig: null,
+      lastHeartbeatAt: this.now,
+      firmware: 'spy',
+      deviceArmed: false,
+      estop: false,
+      faults: [],
+    };
   }
   latestSensors(): SensorFrame | null {
     return null;
@@ -45,6 +55,10 @@ class SpyPhysicalBackend implements HardwareBackend {
     this.writes.push(frame);
   }
   requestArm() {}
+  sendConfig() {}
+  lastConfigResult() {
+    return null;
+  }
 }
 
 const anyOn = (f: OutputFrame) => Object.values(f.outputs).some(Boolean);

@@ -41,6 +41,18 @@ struct SafetyConfig {
   bool allowHumDehum = false;
 };
 
+// Límites de la configuración remota (deben coincidir con DEVICE_LIMITS en src/hal/protocol.ts).
+constexpr uint32_t HB_TIMEOUT_MIN_MS = 1000;
+constexpr uint32_t HB_TIMEOUT_MAX_MS = 10000;
+constexpr uint32_t PUMP_MAX_MIN_MS = 1000;
+constexpr uint32_t PUMP_MAX_MAX_MS = 300000;
+
+// Devuelve nullptr si es válida, o el motivo del rechazo.
+const char* validateConfig(const SafetyConfig& cfg);
+
+// Comparación en tiempo constante (para el HMAC de autenticación).
+bool constantTimeEqual(const char* a, const char* b, unsigned len);
+
 class OutputSafety {
  public:
   explicit OutputSafety(const SafetyConfig& cfg = SafetyConfig());
@@ -68,6 +80,9 @@ class OutputSafety {
   bool oxidantEnable() const { return out_[PUMP_OXIDANT]; }
   uint32_t faults() const { return faults_; }
   void clearFaults() { faults_ = 0; }
+  // Cambia límites: solo desarmado y con valores válidos. Devuelve nullptr si se aplicó.
+  const char* applyConfig(const SafetyConfig& cfg);
+  const SafetyConfig& config() const { return cfg_; }
 
  private:
   SafetyConfig cfg_;

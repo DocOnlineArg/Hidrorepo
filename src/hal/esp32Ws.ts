@@ -4,8 +4,9 @@
  */
 import type { OutputId } from '../core/types';
 import type { BackendLink, HardwareBackend, OutputFrame, SensorFrame } from './backend';
-import type { HostMsg, TelemetryMsg } from './protocol';
+import type { ConfigCmd, DeviceConfig, HostMsg, TelemetryMsg } from './protocol';
 import { encodeHost, parseDevice } from './protocol';
+import { authResponse } from './hmac';
 
 export interface Transport {
   send(data: string): void;
@@ -47,10 +48,21 @@ export class Esp32WsBackend implements HardwareBackend {
   private telemetry: TelemetryMsg | null = null;
   private telemetryAt: number | null = null;
   private fw = '';
+  private authenticated = false;
+  private authError: string | null = null;
+  private authSeq: number | null = null;
+  private configSeq: number | null = null;
+  private configResult: { ok: boolean; error?: string } | null = null;
+  private deviceConfig: DeviceConfig | null = null;
   protocolErrors: string[] = [];
 
+  /**
+   * @param token token de emparejamiento que la ESP32 muestra por el puerto serie en su
+   *              primer arranque. Nunca se transmite: solo HMAC(token, desafío).
+   */
   constructor(
     public url: string,
+    private token: string,
     private factory: TransportFactory = browserWebSocket,
   ) {}
 
@@ -63,6 +75,7 @@ export class Esp32WsBackend implements HardwareBackend {
     };
     t.onclose = () => {
       this.open = false;
+      this.authenticated = false;
     };
     t.onmessage = (data) => this.handle(data);
   }
@@ -74,6 +87,7 @@ export class Esp32WsBackend implements HardwareBackend {
     }
     this.transport = null;
     this.open = false;
+    this.authenticated = false;
     this.telemetry = null;
     this.telemetryAt = null;
   }
@@ -89,8 +103,23 @@ export class Esp32WsBackend implements HardwareBackend {
       if (this.protocolErrors.length > 50) this.protocolErrors.shift();
       return;
     }
-    if (m.type === 'hello') this.fw = `${m.fw} (${m.board}) reset: ${m.resetReason}`;
-    else if (m.type === 'telemetry') {
+    if (m.type === 'hello') {
+      this.fw = `${m.fw} (${m.board}) reset: ${m.resetReason}`;
+      this.deviceConfig = m.config;
+      this.authenticated = false;
+      this.authError = null;
+      this.authSeq = this.seq++;
+      this.send({ type: 'auth', seq: this.authSeq, mac: authResponse(this.token, m.nonce) });
+    } else if (m.type === 'ack') {
+      if (m.seq === this.authSeq) {
+        this.authenticated = m.ok;
+        this.authError = m.ok ? null : (m.error ?? 'Autenticación rechazada (token incorrecto)');
+        this.authSeq = null;
+      } else if (m.seq === this.configSeq) {
+        this.configResult = { ok: m.ok, error: m.error };
+        this.configSeq = null;
+      }
+    } else if (m.type === 'telemetry') {
       this.telemetry = m;
       this.telemetryAt = this.now;
     }
@@ -107,6 +136,9 @@ export class Esp32WsBackend implements HardwareBackend {
   link(): BackendLink {
     return {
       connected: this.open,
+      authenticated: this.authenticated,
+      authError: this.authError,
+      deviceConfig: this.deviceConfig,
       lastHeartbeatAt: this.telemetryAt,
       firmware: this.fw || '—',
       deviceArmed: this.telemetry?.armed ?? false,
@@ -126,10 +158,29 @@ export class Esp32WsBackend implements HardwareBackend {
   }
 
   writeOutputs(frame: OutputFrame): void {
+    if (!this.authenticated) return;
     this.send({ type: 'outputs', seq: frame.seq, outputs: frame.outputs, maxOnMs: frame.maxOnMs });
   }
 
   requestArm(armed: boolean, token: string): void {
+    if (!this.authenticated) return;
     this.send({ type: 'arm', seq: this.seq++, armed, token });
+  }
+
+  sendConfig(cfg: Omit<ConfigCmd, 'type' | 'seq'>): void {
+    if (!this.authenticated) {
+      this.configResult = { ok: false, error: 'No autenticado' };
+      return;
+    }
+    this.configSeq = this.seq++;
+    this.configResult = null;
+    this.send({ type: 'config', seq: this.configSeq, ...cfg });
+    if (cfg.hbTimeoutMs !== undefined || cfg.pumpMaxMs) {
+      // Se refleja en cuanto llegue el ack; el próximo hello trae la configuración real.
+    }
+  }
+
+  lastConfigResult() {
+    return this.configResult;
   }
 }

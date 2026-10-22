@@ -14,6 +14,7 @@ import { photoperiodFromTimes, scheduleInfo } from '../src/core/control/lights';
 import { diffProfiles, profileProblems } from '../src/core/profiles';
 import { parseDevice, encodeHost } from '../src/hal/protocol';
 import { Esp32WsBackend, type Transport } from '../src/hal/esp32Ws';
+import { authResponse, hmacSha256, sha256, toHex } from '../src/hal/hmac';
 import { OutputGate, offOutputs } from '../src/hal/backend';
 import { MockHardwareBackend } from '../src/hal/mockHardware';
 import { exportConfigJson, importConfigJson } from '../src/core/persistence';
@@ -172,28 +173,115 @@ describe('Protocolo y backends', () => {
     expect(JSON.parse(encodeHost({ type: 'heartbeat', seq: 3 }))).toEqual({ type: 'heartbeat', seq: 3 });
   });
 
-  it('Esp32WsBackend con transporte falso: heartbeats, telemetría y órdenes con maxOnMs', () => {
+  it('SHA-256 / HMAC-SHA256: vectores de prueba oficiales (FIPS 180-2, RFC 4231)', () => {
+    const enc = (x: string) => new TextEncoder().encode(x);
+    expect(toHex(sha256(enc('abc')))).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    expect(toHex(sha256(enc('')))).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(toHex(sha256(enc('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')))).toBe(
+      '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+    );
+    // RFC 4231, caso 2
+    expect(toHex(hmacSha256(enc('Jefe'), enc('what do ya want for nothing?')))).toBe(
+      '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843',
+    );
+    // RFC 4231, caso 6 (clave > 64 bytes)
+    expect(toHex(hmacSha256(new Uint8Array(131).fill(0xaa), enc('Test Using Larger Than Block-Size Key - Hash Key First')))).toBe(
+      '60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54',
+    );
+  });
+
+  it('Esp32WsBackend: autenticación desafío-respuesta, telemetría y órdenes con maxOnMs', () => {
     const sent: string[] = [];
     let tr!: Transport;
-    const b = new Esp32WsBackend('ws://fake', () => {
+    const b = new Esp32WsBackend('ws://fake', 'token-secreto', () => {
       tr = { send: (d) => sent.push(d), close: () => {}, onopen: null, onmessage: null, onclose: null };
       return tr;
     });
+    const last = () => JSON.parse(sent[sent.length - 1]);
     b.connect();
     tr.onopen?.();
     b.tick(1000);
     expect(JSON.parse(sent[0]).type).toBe('heartbeat');
-    tr.onmessage?.(JSON.stringify({ type: 'hello', proto: 1, fw: 'hydro 0.1', board: 'esp32', resetReason: 'POWERON' }));
+    const nonce = '0123456789abcdef0123456789abcdef';
+    tr.onmessage?.(JSON.stringify({ type: 'hello', proto: 2, fw: 'hydro 0.2', board: 'esp32', resetReason: 'POWERON', nonce, config: { hbTimeoutMs: 3000, pumpMaxMs: [1, 2, 3, 4, 5, 6, 7, 8] } }));
+    const auth = last();
+    expect(auth.type).toBe('auth');
+    expect(auth.mac).toBe(authResponse('token-secreto', nonce));
+    expect(JSON.stringify(sent)).not.toContain('token-secreto'); // el token nunca viaja
+    expect(b.link().authenticated).toBe(false);
+
+    // Sin autenticar no se envían órdenes
+    const outputs = offOutputs();
+    outputs.phUp = true;
+    const n = sent.length;
+    b.writeOutputs({ seq: 9, outputs, maxOnMs: { phUp: 4000 } });
+    expect(sent.length).toBe(n);
+
+    tr.onmessage?.(JSON.stringify({ type: 'ack', seq: auth.seq, ok: true }));
+    expect(b.link().authenticated).toBe(true);
+    expect(b.link().deviceConfig?.hbTimeoutMs).toBe(3000);
     tr.onmessage?.(JSON.stringify({ type: 'telemetry', seq: 1, uptimeMs: 5, sensors: { rh: { raw: 55, ok: true } }, outputs: {}, armed: false }));
     expect(b.link().lastHeartbeatAt).toBe(1000);
     expect(b.latestSensors()?.sensors.rh?.raw).toBe(55);
-    const outputs = offOutputs();
-    outputs.phUp = true;
     b.writeOutputs({ seq: 9, outputs, maxOnMs: { phUp: 4000 } });
-    const cmd = JSON.parse(sent[sent.length - 1]);
-    expect(cmd).toMatchObject({ type: 'outputs', seq: 9, maxOnMs: { phUp: 4000 } });
+    expect(last()).toMatchObject({ type: 'outputs', seq: 9, maxOnMs: { phUp: 4000 } });
+
+    b.sendConfig({ hbTimeoutMs: 4000 });
+    const cfg = last();
+    expect(cfg).toMatchObject({ type: 'config', hbTimeoutMs: 4000 });
+    tr.onmessage?.(JSON.stringify({ type: 'ack', seq: cfg.seq, ok: false, error: 'armado' }));
+    expect(b.lastConfigResult()).toEqual({ ok: false, error: 'armado' });
+
     tr.onmessage?.('garbage');
     expect(b.protocolErrors.length).toBe(1);
+    // Versión antigua del firmware: rechazada
+    tr.onmessage?.(JSON.stringify({ type: 'hello', proto: 1, fw: 'x', nonce }));
+    expect(b.protocolErrors.length).toBe(2);
+  });
+
+  it('autenticación rechazada: el enlace no se considera sano y no se puede armar', () => {
+    let tr!: Transport;
+    const b = new Esp32WsBackend('ws://fake', 'malo', () => {
+      tr = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null };
+      return tr;
+    });
+    const e = new Engine({ hardware: b });
+    e.setMode('hardware');
+    tr.onopen?.();
+    tr.onmessage?.(JSON.stringify({ type: 'hello', proto: 2, fw: 'x', board: 'b', resetReason: 'r', nonce: 'aaaaaaaaaaaaaaaa' }));
+    tr.onmessage?.(JSON.stringify({ type: 'ack', seq: 2, ok: false, error: 'token incorrecto' }));
+    tr.onmessage?.(JSON.stringify({ type: 'telemetry', seq: 1, uptimeMs: 5, sensors: {}, outputs: {}, armed: false }));
+    e.advance(2);
+    expect(b.link().authError).toBe('token incorrecto');
+    expect(e.safeState).toBe(true);
+    expect(e.arm('ARMAR', true).ok).toBe(false);
+  });
+
+  it('configuración remota: validación de límites y exigencia de desarmado', () => {
+    const mock = new MockHardwareBackend(() => ({}));
+    mock.connect();
+    mock.sendConfig({ hbTimeoutMs: 500 });
+    expect(mock.lastConfigResult()?.ok).toBe(false);
+    mock.sendConfig({ pumpMaxMs: [1000, 2000] });
+    expect(mock.lastConfigResult()?.ok).toBe(false);
+    mock.sendConfig({ wifi: { ssid: 'red', pass: '123' } });
+    expect(mock.lastConfigResult()?.ok).toBe(false);
+    mock.sendConfig({ hbTimeoutMs: 5000, pumpMaxMs: [5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000] });
+    expect(mock.lastConfigResult()?.ok).toBe(true);
+    expect(mock.link().deviceConfig?.pumpMaxMs[0]).toBe(5000);
+    mock.tick(0);
+    mock.requestArm(true, 'ARMAR');
+    mock.sendConfig({ hbTimeoutMs: 3000 });
+    expect(mock.lastConfigResult()?.error).toMatch(/desarmado/);
+    // El máximo del dispositivo limita la orden del host
+    const o = offOutputs();
+    o.solA = true;
+    mock.writeOutputs({ seq: 1, outputs: o, maxOnMs: { solA: 60000 } });
+    mock.tick(4000);
+    expect(mock.reportedOutputs()?.solA).toBe(true);
+    mock.writeOutputs({ seq: 2, outputs: o, maxOnMs: { solA: 60000 } });
+    mock.tick(5100);
+    expect(mock.reportedOutputs()?.solA).toBe(false);
   });
 
   it('OutputGate no envía nada fuera del modo hardware', () => {
@@ -269,3 +357,26 @@ describe('Exportación, modo hardware simulado y comparación', () => {
     expect((r.on.summary.timeInBand.ph ?? 0)).toBeGreaterThan(r.off.summary.timeInBand.ph ?? 0);
   });
 });
+
+describe('Calibración de caudal de bombas', () => {
+  it('mide el caudal real a probeta, lo aplica y la segunda prueba coincide', () => {
+    const e = new Engine({ seed: 2 });
+    expect(e.runFlowTest('solA', 100).ok).toBe(false); // > tiempo máximo (60 s)
+    expect(e.runFlowTest('solA', 60).ok).toBe(true);
+    e.advance(61);
+    const rt = e.pumps.solA;
+    expect(rt.lastCalibrationS).toBe(60);
+    const measured = rt.lastCalibrationMl as number;
+    expect(measured).toBeCloseTo(50 * 1.08, 1); // caudal real simulado distinto del nominal
+    expect(rt.totalDosedMl).toBe(0); // no entra al depósito ni cuenta como dosis
+    expect(rt.primed).toBe(true); // la prueba deja la línea cebada
+    expect(e.applyFlowCalibration('solA', measured, 60).ok).toBe(true);
+    expect(e.config.pumps.solA.flowMlPerMin).toBeCloseTo(54, 1);
+    e.runFlowTest('solA', 30);
+    e.advance(31);
+    expect(e.pumps.solA.lastCalibrationMl as number).toBeCloseTo(27, 1);
+    // Medición absurda: rechazada
+    expect(e.applyFlowCalibration('solA', 500, 60).ok).toBe(false);
+  });
+});
+

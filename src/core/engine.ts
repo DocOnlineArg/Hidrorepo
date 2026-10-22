@@ -96,6 +96,9 @@ const SENSOR_DEPENDENTS: Record<SensorId, string> = {
   waterTemp: 'Solo monitorización (sin acciones dependientes)',
 };
 
+/** Caudal real / nominal de cada bomba simulada (dispersión típica de peristálticas). */
+const FLOW_FACTOR: Record<PumpId, number> = { phUp: 0.94, phDown: 1.05, oxidant: 0.97, solA: 1.08, solB: 0.92, bloom: 1.03, silicon: 0.96, pk: 1.06 };
+
 const BASE_NOISE: Record<SensorId, number> = { ph: 0.004, ec: 0.002, orp: 0.8, airTemp: 0.03, rh: 0.2, waterTemp: 0.02 };
 const PROBE_ERROR: Record<SensorId, { gain: number; offset: number }> = {
   ph: { gain: 0.97, offset: 0.12 },
@@ -133,6 +136,8 @@ export class Engine {
   scenarioId = 'blank';
   /** Contador de cambios para la UI. */
   version = 0;
+  /** Caudal real / nominal de cada bomba en la simulación (1 = exacto). */
+  flowFactor: Record<PumpId, number> = { ...FLOW_FACTOR };
   /** Hook de pruebas: se ejecuta dentro del paso protegido. */
   testHook: ((e: Engine) => void) | null = null;
 
@@ -377,7 +382,7 @@ export class Engine {
       this.link.connected = L.connected;
       this.link.lastHeartbeatAt = L.lastHeartbeatAt;
       this.link.firmware = L.firmware;
-      ok = L.connected && L.lastHeartbeatAt !== null && this.t - L.lastHeartbeatAt <= timeout;
+      ok = L.connected && L.authenticated && L.lastHeartbeatAt !== null && this.t - L.lastHeartbeatAt <= timeout;
       if (L.estop && !this.estop) this.emergencyStop('E-STOP físico reportado por el dispositivo');
     } else {
       if (!this.link.faultInjected) this.link.lastHeartbeatAt = this.t;
@@ -451,7 +456,7 @@ export class Engine {
 
   private stepPumps(dtS: number): void {
     const hooks = this.pumpHooks();
-    for (const id of PUMP_IDS) stepPump(id, this.config.pumps[id], this.pumps[id], this.t, dtS, hooks);
+    for (const id of PUMP_IDS) stepPump(id, this.config.pumps[id], this.pumps[id], this.t, dtS, hooks, this.mode === 'hardware' ? 1 : this.flowFactor[id]);
     const why = oxidantRuntimeCheck(this.safetyCtx());
     if (why) {
       stopPump('oxidant', this.pumps.oxidant, this.t, `Subsistema oxidante: ${why}`, hooks);
@@ -668,6 +673,31 @@ export class Engine {
     return this.startPumpOp(id, this.config.pumps[id].primeVolumeMl, 'prime', 'Cebado de línea');
   }
 
+  /**
+   * Prueba de caudal: la bomba descarga en una probeta (no en el depósito) durante `seconds`.
+   * Después el operador mide el volumen y llama a `applyFlowCalibration`.
+   */
+  runFlowTest(id: PumpId, seconds: number): Verdict {
+    const pc = this.config.pumps[id];
+    if (!(seconds > 0)) return { ok: false, reasons: ['Duración inválida'] };
+    if (seconds > pc.maxRunS) return { ok: false, reasons: [`La prueba (${seconds} s) supera el tiempo máximo de la bomba (${pc.maxRunS} s)`] };
+    this.pumps[id].lastCalibrationMl = null;
+    this.pumps[id].lastCalibrationS = null;
+    return this.startPumpOp(id, (pc.flowMlPerMin * seconds) / 60, 'calibration', `Prueba de caudal ${seconds} s (a probeta)`);
+  }
+
+  /** Aplica el caudal medido: flujo = mL medidos / minutos de marcha. */
+  applyFlowCalibration(id: PumpId, measuredMl: number, seconds: number): Verdict {
+    if (!(measuredMl > 0) || !(seconds > 0)) return { ok: false, reasons: ['Volumen y duración deben ser > 0'] };
+    const old = this.config.pumps[id].flowMlPerMin;
+    const flow = measuredMl / (seconds / 60);
+    if (flow < old * 0.3 || flow > old * 3)
+      return { ok: false, reasons: [`Caudal resultante ${flow.toFixed(1)} mL/min muy distinto del actual (${old}); revise la medición o la bomba`] };
+    this.updateConfig((c) => (c.pumps[id].flowMlPerMin = +flow.toFixed(2)), `${this.config.pumps[id].label}: caudal calibrado ${old} → ${flow.toFixed(2)} mL/min (${measuredMl} mL en ${seconds} s)`);
+    if (this.mode !== 'hardware') this.flowFactor[id] = (old * this.flowFactor[id]) / flow;
+    return { ok: true, reasons: [`Nuevo caudal: ${flow.toFixed(2)} mL/min`] };
+  }
+
   stopPumpManual(id: PumpId): void {
     stopPump(id, this.pumps[id], this.t, 'Parada manual', this.pumpHooks());
     this.bump();
@@ -867,6 +897,7 @@ export class Engine {
     if (this.estop) reasons.push('E-STOP activo');
     const L = this.hardware.link();
     if (!L.connected) reasons.push('Dispositivo no conectado');
+    else if (!L.authenticated) reasons.push(`Dispositivo no autenticado${L.authError ? `: ${L.authError}` : ''}`);
     if (reasons.length) {
       this.log.add(this.t, 'hardware', 'Armado', `Rechazado: ${reasons.join('; ')}`);
       this.bump();
@@ -1049,6 +1080,7 @@ export class Engine {
     this.plant = new PlantModel(createPlantState(initial), this.config.plant);
     this.sensors = this.createSensors();
     if (keepCalibration) for (const id of SENSOR_IDS) this.sensors[id].calibration = cal[id];
+    else this.flowFactor = { ...FLOW_FACTOR };
     this.pumps = this.createPumps();
     this.relays = this.createRelays();
     this.chem = new ChemistryController(this.t);
@@ -1071,7 +1103,10 @@ export class Engine {
   applyDemoSetup(): void {
     applyDemoProfiles(this.config, this.t);
     this.demoCalibrateAll();
-    for (const id of PUMP_IDS) this.pumps[id].primed = true;
+    for (const id of PUMP_IDS) {
+      this.pumps[id].primed = true;
+      this.flowFactor[id] = 1; // demostración: caudales ya calibrados
+    }
     this.log.add(this.t, 'config', 'Escenario', 'Configuración de DEMOSTRACIÓN cargada: valores de ejemplo, no recomendaciones agronómicas');
     this.bump();
   }

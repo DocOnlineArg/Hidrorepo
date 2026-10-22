@@ -18,6 +18,8 @@ export function createPumpRuntime(cfg: PumpConfig): PumpRuntime {
     totalDosedMl: 0,
     opCount: 0,
     lastOpMl: 0,
+    lastCalibrationMl: null,
+    lastCalibrationS: null,
     doseLog: [],
   };
 }
@@ -52,6 +54,10 @@ export function stopPump(id: PumpId, rt: PumpRuntime, now: number, why: string, 
   const ml = rt.deliveredThisRunMl;
   if (rt.origin === 'prime') {
     rt.primed = rt.levelMl > 0;
+  } else if (rt.origin === 'calibration') {
+    rt.lastCalibrationMl = ml;
+    rt.lastCalibrationS = rt.runStartedAt !== null ? (now - rt.runStartedAt) / 1000 : null;
+    rt.primed = rt.levelMl > 0;
   } else if (ml > 0) {
     rt.opCount++;
     rt.lastOpMl = ml;
@@ -68,17 +74,19 @@ export function stopPump(id: PumpId, rt: PumpRuntime, now: number, why: string, 
 /**
  * Avanza una bomba `dtS` segundos. Incluye el corte duro por tiempo máximo,
  * independiente de quién dio la orden.
+ * @param flowFactor relación caudal real / nominal (simulación de la dispersión de las bombas
+ *                   peristálticas). El tiempo de marcha se calcula con el caudal nominal.
  */
-export function stepPump(id: PumpId, cfg: PumpConfig, rt: PumpRuntime, now: number, dtS: number, hooks: PumpHooks): void {
+export function stepPump(id: PumpId, cfg: PumpConfig, rt: PumpRuntime, now: number, dtS: number, hooks: PumpHooks, flowFactor = 1): void {
   if (!rt.running || rt.runStartedAt === null) return;
   const elapsed = (now - rt.runStartedAt) / 1000;
   const remainingPlanned = rt.plannedDurationS === null ? dtS : Math.max(0, rt.plannedDurationS - (elapsed - dtS));
   const runS = Math.min(dtS, remainingPlanned);
-  const want = (cfg.flowMlPerMin / 60) * runS;
+  const want = ((cfg.flowMlPerMin * flowFactor) / 60) * runS;
   const ml = Math.min(want, Math.max(0, rt.levelMl));
   rt.levelMl -= ml;
   rt.deliveredThisRunMl += ml;
-  if (rt.origin !== 'prime') hooks.deliver(id, ml);
+  if (rt.origin !== 'prime' && rt.origin !== 'calibration') hooks.deliver(id, ml);
 
   if (rt.levelMl <= cfg.emptyThresholdMl) {
     rt.primed = false;

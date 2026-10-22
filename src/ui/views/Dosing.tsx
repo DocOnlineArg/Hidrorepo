@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useEngine } from '../context';
 import { Card, Check, Chip, Field, Flash, Level, NumInput, Reasons, useFlash } from '../components/common';
 import type { CompatStatus, PumpId } from '../../core/types';
@@ -173,6 +174,7 @@ function PumpCard({ id }: { id: PumpId }) {
         )}
       </div>
       <Flash msg={msg} />
+      <FlowCalibration id={id} />
       {events.length > 0 && (
         <ul className="event-list">
           {events.map((ev) => (
@@ -288,5 +290,57 @@ function CompatMatrix() {
         </table>
       </div>
     </Card>
+  );
+}
+
+function FlowCalibration({ id }: { id: PumpId }) {
+  const { engine: e } = useEngine();
+  const pc = e.config.pumps[id];
+  const rt = e.pumps[id];
+  const [secs, setSecs] = useState<number | null>(Math.min(60, pc.maxRunS));
+  const [measured, setMeasured] = useState<number | null>(null);
+  const [msg, setMsg] = useFlash();
+  const testing = rt.running && rt.origin === 'calibration';
+  const sim = e.mode !== 'hardware';
+  return (
+    <details>
+      <summary>Calibrar caudal</summary>
+      <ol style={{ margin: 0, paddingLeft: 18, fontSize: '0.82rem' }}>
+        <li>Coloque la salida de la manguera en una probeta graduada (el líquido no va al depósito).</li>
+        <li>
+          Ejecute la bomba durante{' '}
+          <NumInput value={secs} min={1} max={pc.maxRunS} width={60} onCommit={setSecs} /> s{' '}
+          <button className="btn small" disabled={rt.running || secs === null} onClick={() => setMsg(e.runFlowTest(id, secs as number))}>
+            {testing ? 'Midiendo…' : 'Iniciar prueba'}
+          </button>
+        </li>
+        <li>
+          Lea el volumen en la probeta:{' '}
+          <NumInput value={measured} min={0} allowNull width={70} onCommit={setMeasured} /> mL
+          {sim && rt.lastCalibrationMl !== null && (
+            <>
+              {' '}
+              <button className="btn small" onClick={() => setMeasured(+(rt.lastCalibrationMl as number).toFixed(1))} title="En simulación, la probeta virtual marca el volumen realmente entregado">
+                Leer probeta simulada ({rt.lastCalibrationMl.toFixed(1)} mL)
+              </button>
+            </>
+          )}
+        </li>
+        <li>
+          <button
+            className="btn small primary"
+            disabled={measured === null || rt.lastCalibrationS === null}
+            onClick={() => {
+              setMsg(e.applyFlowCalibration(id, measured as number, rt.lastCalibrationS as number));
+              setMeasured(null);
+            }}
+          >
+            Aplicar caudal
+          </button>{' '}
+          {measured !== null && rt.lastCalibrationS ? <small>→ {(measured / (rt.lastCalibrationS / 60)).toFixed(2)} mL/min (actual {pc.flowMlPerMin})</small> : null}
+        </li>
+      </ol>
+      <Flash msg={msg} okText="Hecho" />
+    </details>
   );
 }

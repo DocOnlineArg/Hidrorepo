@@ -4,6 +4,29 @@
 
 namespace hydro {
 
+const char* validateConfig(const SafetyConfig& cfg) {
+  if (cfg.heartbeatTimeoutMs < HB_TIMEOUT_MIN_MS || cfg.heartbeatTimeoutMs > HB_TIMEOUT_MAX_MS)
+    return "timeout de heartbeat fuera de rango";
+  for (uint8_t i = 0; i < NUM_PUMPS; i++)
+    if (cfg.pumpHardMaxMs[i] < PUMP_MAX_MIN_MS || cfg.pumpHardMaxMs[i] > PUMP_MAX_MAX_MS)
+      return "tiempo maximo de bomba fuera de rango";
+  return nullptr;
+}
+
+bool constantTimeEqual(const char* a, const char* b, unsigned len) {
+  unsigned char diff = 0;
+  for (unsigned i = 0; i < len; i++) diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+  return diff == 0;
+}
+
+const char* OutputSafety::applyConfig(const SafetyConfig& cfg) {
+  if (armed_) return "el dispositivo debe estar desarmado";
+  const char* err = validateConfig(cfg);
+  if (err) return err;
+  cfg_ = cfg;
+  return nullptr;
+}
+
 OutputSafety::OutputSafety(const SafetyConfig& cfg) : cfg_(cfg) { boot(0); }
 
 void OutputSafety::boot(uint32_t now) {

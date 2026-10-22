@@ -7,7 +7,7 @@
  */
 import type { OutputId, PumpId, SensorId, SystemMode } from '../core/types';
 import { OUTPUT_IDS } from '../core/types';
-import type { SensorSample } from './protocol';
+import type { ConfigCmd, DeviceConfig, SensorSample } from './protocol';
 
 export interface SensorFrame {
   /** Instante de recepción (reloj del motor). */
@@ -23,6 +23,10 @@ export interface OutputFrame {
 
 export interface BackendLink {
   connected: boolean;
+  /** El dispositivo aceptó la autenticación desafío-respuesta. */
+  authenticated: boolean;
+  authError: string | null;
+  deviceConfig: DeviceConfig | null;
   lastHeartbeatAt: number | null;
   firmware: string;
   deviceArmed: boolean;
@@ -43,6 +47,10 @@ export interface HardwareBackend {
   reportedOutputs(): Record<OutputId, boolean> | null;
   writeOutputs(frame: OutputFrame): void;
   requestArm(armed: boolean, token: string): void;
+  /** Cambia la configuración persistente del dispositivo (requiere desarmado). */
+  sendConfig(cfg: Omit<ConfigCmd, 'type' | 'seq'>): void;
+  /** Resultado de la última orden de configuración. */
+  lastConfigResult(): { ok: boolean; error?: string } | null;
 }
 
 export function offOutputs(): Record<OutputId, boolean> {
@@ -73,7 +81,7 @@ export class OutputGate {
     const b = this.backend;
     if (!b || ctx.mode !== 'hardware') return null;
     const link = b.link();
-    const blocked = !ctx.armed || ctx.safeState || ctx.estop || !link.connected || link.estop;
+    const blocked = !ctx.armed || ctx.safeState || ctx.estop || !link.connected || !link.authenticated || link.estop;
     const out: OutputFrame = blocked
       ? { seq: this.seq++, outputs: offOutputs(), maxOnMs: {} }
       : { seq: this.seq++, outputs: { ...frame.outputs }, maxOnMs: { ...frame.maxOnMs } };

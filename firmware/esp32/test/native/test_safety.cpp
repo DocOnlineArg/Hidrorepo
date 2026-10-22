@@ -163,7 +163,38 @@ static void test_comm_timeout_and_estop() {
   CHECK(!e.pumpRailEnabled());
 }
 
+static void test_config_validation() {
+  SafetyConfig c;
+  CHECK(validateConfig(c) == nullptr);
+  c.heartbeatTimeoutMs = 500;
+  CHECK(validateConfig(c) != nullptr);
+  c.heartbeatTimeoutMs = 3000;
+  c.pumpHardMaxMs[PUMP_SOL_B] = 400000;
+  CHECK(validateConfig(c) != nullptr);
+  c.pumpHardMaxMs[PUMP_SOL_B] = 20000;
+  OutputSafety s = armedSafety(0);
+  CHECK(s.applyConfig(c) != nullptr);  // armado → rechazo
+  s.disarm();
+  CHECK(s.applyConfig(c) == nullptr);
+  CHECK(s.config().pumpHardMaxMs[PUMP_SOL_B] == 20000);
+  // El nuevo máximo duro se aplica a las órdenes siguientes
+  s.heartbeat(0);
+  CHECK(s.arm("ARMAR", 0));
+  Frame f;
+  f.req[PUMP_SOL_B] = true;
+  f.maxOn[PUMP_SOL_B] = 60000;
+  s.command(f.req, f.maxOn, 0);
+  s.heartbeat(19000);
+  s.update(19000);
+  CHECK(s.output(PUMP_SOL_B));
+  s.update(20000);
+  CHECK(!s.output(PUMP_SOL_B));
+  CHECK(constantTimeEqual("abcd", "abcd", 4));
+  CHECK(!constantTimeEqual("abcd", "abce", 4));
+}
+
 int main() {
+  test_config_validation();
   test_boot_and_arming();
   test_pump_maxon_and_latch();
   test_hard_max_and_missing_limit();

@@ -54,7 +54,7 @@ export function compatStatus(cfg: SystemConfig, a: PumpId, b: PumpId): CompatSta
 }
 
 export function dosedInWindow(rt: PumpRuntime, now: number, windowMs: number): number {
-  return rt.doseLog.filter((d) => d.t >= now - windowMs && d.origin !== 'prime').reduce((a, d) => a + d.ml, 0);
+  return rt.doseLog.filter((d) => d.t >= now - windowMs && d.origin !== 'prime' && d.origin !== 'calibration').reduce((a, d) => a + d.ml, 0);
 }
 
 /** Tiempo (ms) desde el último uso de cualquier bomba distinta de `except`, o 0 si alguna funciona. */

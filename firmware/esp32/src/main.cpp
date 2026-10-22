@@ -3,7 +3,8 @@
 // Responsabilidades del firmware (la lógica de control vive en el dashboard):
 //  - Estado seguro inmediato al arrancar: todas las salidas en BAJO antes que nada.
 //  - Lectura no bloqueante de sensores (EZO pH/EC/ORP, SHT4x, DS18B20).
-//  - Protocolo JSON v1 por WebSocket (puerto 81): hello, telemetry, ack / heartbeat, outputs, arm.
+//  - Protocolo JSON v2 por WebSocket (puerto 81): hello, telemetry, ack / auth, heartbeat, outputs, arm, config.
+//  - Autenticación desafío-respuesta HMAC-SHA256 con un token de emparejamiento guardado en NVS.
 //  - Capa de seguridad local (hydro::OutputSafety): armado explícito, timeout de heartbeat,
 //    tiempo máximo por bomba, exclusión de bombas, oxidante aislado, interbloqueo hum/deshum, E-STOP.
 //  - Watchdog de tareas, recuperación tras reinicio (siempre desarmado) y registro de errores en NVS.
@@ -14,14 +15,16 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <esp_system.h>
+#include <esp_random.h>
 #include <esp_task_wdt.h>
+#include <mbedtls/md.h>
 
 #include "OutputSafety.h"
 #include "pins.h"
 #include "sensors.h"
 
-static const char* FW_VERSION = "hydro-esp32 0.1.0";
-static constexpr int PROTOCOL_VERSION = 1;
+static const char* FW_VERSION = "hydro-esp32 0.2.0";
+static constexpr int PROTOCOL_VERSION = 2;
 static constexpr uint32_t WDT_TIMEOUT_S = 5;
 static constexpr uint32_t TELEMETRY_PERIOD_MS = 1000;
 
@@ -40,6 +43,14 @@ static EzoSensor ezoEc(i2caddr::EZO_EC, 600);
 static EzoSensor ezoOrp(i2caddr::EZO_ORP, 900);
 static Sht4x sht;
 static WaterTemp waterTemp(pins::ONEWIRE);
+
+// Estado por cliente WebSocket: desafío y autenticación.
+struct ClientState {
+  bool authenticated = false;
+  char nonce[33] = {0};
+};
+static ClientState clients[WEBSOCKETS_SERVER_CLIENT_MAX];
+static String authToken;
 
 static uint32_t telemetrySeq = 0;
 static uint32_t lastTelemetry = 0;
@@ -91,6 +102,45 @@ static void applyOutputs() {
   digitalWrite(pins::OX_EN, safety.oxidantEnable() ? HIGH : LOW);
 }
 
+// ---------------------------------------------------------------- autenticación
+static void randomHex(char* out, size_t bytes) {
+  static const char* hex = "0123456789abcdef";
+  for (size_t i = 0; i < bytes; i++) {
+    uint8_t b = esp_random() & 0xFF;
+    out[i * 2] = hex[b >> 4];
+    out[i * 2 + 1] = hex[b & 0x0F];
+  }
+  out[bytes * 2] = 0;
+}
+
+// Token de emparejamiento: se genera en el primer arranque y se muestra por el puerto serie.
+// Para regenerarlo, borrar la clave NVS "auth_token" (p. ej. con un borrado completo de flash).
+static void loadOrCreateToken() {
+  authToken = prefs.getString("auth_token", "");
+  if (authToken.length() < 16) {
+    static const char* alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    char tok[21];
+    for (int i = 0; i < 20; i++) tok[i] = alphabet[esp_random() % 57];
+    tok[20] = 0;
+    authToken = tok;
+    prefs.putString("auth_token", authToken);
+  }
+  Serial.printf("Token de emparejamiento: %s\n", authToken.c_str());
+}
+
+static void hmacHex(const char* msg, char out[65]) {
+  uint8_t mac[32];
+  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  mbedtls_md_hmac(info, reinterpret_cast<const uint8_t*>(authToken.c_str()), authToken.length(),
+                  reinterpret_cast<const uint8_t*>(msg), strlen(msg), mac);
+  static const char* hex = "0123456789abcdef";
+  for (int i = 0; i < 32; i++) {
+    out[i * 2] = hex[mac[i] >> 4];
+    out[i * 2 + 1] = hex[mac[i] & 0x0F];
+  }
+  out[64] = 0;
+}
+
 // ---------------------------------------------------------------- protocolo
 static void sendJson(uint8_t client, JsonDocument& doc, bool broadcast = false) {
   String out;
@@ -108,6 +158,13 @@ static void sendHello(uint8_t client) {
   doc["fw"] = FW_VERSION;
   doc["board"] = "esp32-wroom-32e";
   doc["resetReason"] = resetReason + " boot#" + String(bootCount);
+  randomHex(clients[client].nonce, 16);
+  clients[client].authenticated = false;
+  doc["nonce"] = clients[client].nonce;
+  JsonObject cfg = doc["config"].to<JsonObject>();
+  cfg["hbTimeoutMs"] = safety.config().heartbeatTimeoutMs;
+  JsonArray pm = cfg["pumpMaxMs"].to<JsonArray>();
+  for (uint8_t i = 0; i < hydro::NUM_PUMPS; i++) pm.add(safety.config().pumpHardMaxMs[i]);
   sendJson(client, doc);
 }
 
@@ -157,6 +214,44 @@ static void sendTelemetry() {
   sendJson(0, doc, true);
 }
 
+static void handleConfig(uint8_t client, uint32_t seq, JsonDocument& doc) {
+  hydro::SafetyConfig cfg = safety.config();
+  if (!doc["hbTimeoutMs"].isNull()) cfg.heartbeatTimeoutMs = doc["hbTimeoutMs"] | 0;
+  if (!doc["pumpMaxMs"].isNull()) {
+    JsonArray arr = doc["pumpMaxMs"];
+    if (arr.size() != hydro::NUM_PUMPS) {
+      sendAck(client, seq, false, "se requieren 8 valores");
+      return;
+    }
+    for (uint8_t i = 0; i < hydro::NUM_PUMPS; i++) cfg.pumpHardMaxMs[i] = arr[i] | 0;
+  }
+  // Validar todo antes de guardar nada.
+  bool hasWifi = !doc["wifi"].isNull();
+  String ssid = doc["wifi"]["ssid"] | "";
+  String pass = doc["wifi"]["pass"] | "";
+  if (hasWifi && (ssid.length() == 0 || ssid.length() > 32 || pass.length() > 63 || (pass.length() > 0 && pass.length() < 8))) {
+    sendAck(client, seq, false, "credenciales Wi-Fi invalidas");
+    return;
+  }
+  const char* err = safety.applyConfig(cfg);
+  if (err) {
+    sendAck(client, seq, false, err);
+    return;
+  }
+  prefs.putUInt("hb_timeout", cfg.heartbeatTimeoutMs);
+  for (uint8_t i = 0; i < hydro::NUM_PUMPS; i++) {
+    char key[12];
+    snprintf(key, sizeof(key), "pmax%u", i);
+    prefs.putUInt(key, cfg.pumpHardMaxMs[i]);
+  }
+  if (hasWifi) {
+    prefs.putString("wifi_ssid", ssid);
+    prefs.putString("wifi_pass", pass);
+  }
+  Serial.println("Configuración actualizada desde el dashboard");
+  sendAck(client, seq, true);
+}
+
 static void handleMessage(uint8_t client, const uint8_t* payload, size_t len) {
   JsonDocument doc;
   if (deserializeJson(doc, payload, len)) {
@@ -166,6 +261,26 @@ static void handleMessage(uint8_t client, const uint8_t* payload, size_t len) {
   const char* type = doc["type"] | "";
   uint32_t seq = doc["seq"] | 0;
   uint32_t now = millis();
+  if (strcmp(type, "auth") == 0) {
+    const char* mac = doc["mac"] | "";
+    char expected[65];
+    hmacHex(clients[client].nonce, expected);
+    bool ok = strlen(mac) == 64 && clients[client].nonce[0] != 0 && hydro::constantTimeEqual(mac, expected, 64);
+    clients[client].authenticated = ok;
+    clients[client].nonce[0] = 0;  // un desafío solo sirve una vez
+    if (!ok) logError("Autenticación rechazada");
+    sendAck(client, seq, ok, ok ? nullptr : "token incorrecto");
+    return;
+  }
+  if (!clients[client].authenticated) {
+    // Sin autenticar: ni heartbeat ni órdenes.
+    if (strcmp(type, "heartbeat") != 0) sendAck(client, seq, false, "no autenticado");
+    return;
+  }
+  if (strcmp(type, "config") == 0) {
+    handleConfig(client, seq, doc);
+    return;
+  }
   if (strcmp(type, "heartbeat") == 0) {
     safety.heartbeat(now);
   } else if (strcmp(type, "outputs") == 0) {
@@ -207,6 +322,8 @@ static void onWsEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t le
       handleMessage(client, payload, len);
       break;
     case WStype_DISCONNECTED:
+      clients[client].authenticated = false;
+      clients[client].nonce[0] = 0;
       // El timeout de heartbeat de OutputSafety apagará las salidas si no hay otro cliente.
       break;
     default:
@@ -261,6 +378,10 @@ void setup() {
     snprintf(key, sizeof(key), "pmax%u", i);
     cfg.pumpHardMaxMs[i] = prefs.getUInt(key, cfg.pumpHardMaxMs[i]);
   }
+  if (const char* err = hydro::validateConfig(cfg)) {
+    logError(String("Configuración NVS inválida (") + err + "): se usan valores por defecto");
+    cfg = hydro::SafetyConfig();
+  }
   safety = hydro::OutputSafety(cfg);
   safety.boot(millis());  // recuperación tras reinicio: desarmado y todo apagado
 
@@ -269,6 +390,7 @@ void setup() {
 
   Wire.begin(pins::I2C_SDA, pins::I2C_SCL, 100000);
   waterTemp.begin();
+  loadOrCreateToken();
   startNetwork();
   ws.begin();
   ws.onEvent(onWsEvent);
