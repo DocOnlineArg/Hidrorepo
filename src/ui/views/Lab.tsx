@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { askConfirm } from '../dialog';
 import { useEngine } from '../context';
 import { Card, Check, Chip, Field, NumInput } from '../components/common';
 import { Chart } from '../components/Chart';
@@ -45,8 +46,8 @@ export function LabView() {
           <div className="row">
             <button
               className="btn primary"
-              onClick={() => {
-                if (!confirm('Cargar el escenario reemplaza la configuración y el estado actuales (exporte antes si desea conservarlos). ¿Continuar?')) return;
+              onClick={async () => {
+                if (!(await askConfirm('Cargar el escenario reemplaza la configuración y el estado actuales. Exporte antes la configuración si desea conservarla.', { okText: 'Cargar escenario' }))) return;
                 loadScenario(e, sc);
                 e.running = true;
               }}

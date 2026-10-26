@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { askText, showMessage } from '../dialog';
 import { useEngine } from '../context';
 import { Card, Check, Chip, Field, Flash, Level, NumInput, Reasons, useFlash } from '../components/common';
 import type { CompatStatus, PumpId } from '../../core/types';
@@ -239,14 +240,14 @@ const COMPAT_TEXT: Record<CompatStatus, string> = { compatible: '✓', incompati
 
 function CompatMatrix() {
   const { engine: e } = useEngine();
-  const cycle = (a: PumpId, b: PumpId) => {
-    if (a === 'oxidant' || b === 'oxidant') return alert('Las combinaciones con oxidante son incompatibles por regla del sistema y no se pueden modificar.');
+  const cycle = async (a: PumpId, b: PumpId) => {
+    if (a === 'oxidant' || b === 'oxidant') return showMessage('Las combinaciones con oxidante son incompatibles por regla del sistema y no se pueden modificar.');
     const key = pairKey(a, b);
     const cur = e.config.compatibility.pairs[key];
-    if (cur?.validatedBy === 'regla del sistema') return alert(`Regla del sistema: ${cur.note}`);
+    if (cur?.validatedBy === 'regla del sistema') return showMessage(`Regla del sistema: ${cur.note}`);
     const next: CompatStatus = cur?.status === 'unknown' ? 'compatible' : cur?.status === 'compatible' ? 'incompatible' : 'unknown';
     if (next === 'compatible') {
-      const who = prompt(`Marcar ${e.config.liquids[a].name} + ${e.config.liquids[b].name} como COMPATIBLES.\nSolo hágalo con documentación del fabricante. Indique la fuente / responsable:`);
+      const who = await askText(`Marcar ${e.config.liquids[a].name} + ${e.config.liquids[b].name} como COMPATIBLES.\nSolo hágalo con documentación del fabricante. Indique la fuente / responsable:`);
       if (!who) return;
       e.updateConfig((c) => (c.compatibility.pairs[key] = { status: 'compatible', note: 'Validado por el usuario', validatedBy: who }), `Compatibilidad ${key}: compatible (validado por ${who})`);
     } else {

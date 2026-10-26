@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
+import { askConfirm, exportText } from '../dialog';
 import { useEngine } from '../context';
-import { Card, Check, Field, NumInput, Seg, downloadText } from '../components/common';
+import { Card, Check, Field, NumInput, Seg } from '../components/common';
 import { exportConfigJson, importConfigJson } from '../../core/persistence';
 import { createDefaultConfig } from '../../core/config';
 import { MODEL_NOTES } from '../../core/physics/plant';
@@ -45,7 +46,7 @@ export function SettingsView() {
         <Card title="Persistencia y exportación">
           <p className="note">La configuración, calibraciones, niveles de recipientes y la hora simulada se guardan automáticamente en este navegador (localStorage). Al reiniciar nunca se vuelve al modo hardware ni con salidas armadas.</p>
           <div className="row">
-            <button className="btn primary" onClick={() => downloadText(`hidrotwin-config-${new Date().toISOString().slice(0, 10)}.json`, exportConfigJson(c))}>
+            <button className="btn primary" onClick={() => exportText(`hidrotwin-config-${new Date().toISOString().slice(0, 10)}.json`, exportConfigJson(c))}>
               Exportar parámetros (JSON)
             </button>
             <button className="btn" onClick={() => fileRef.current?.click()}>
@@ -71,8 +72,8 @@ export function SettingsView() {
             />
             <button
               className="btn danger"
-              onClick={() => {
-                if (!confirm('Restablecer toda la configuración a los valores por defecto (sin objetivos)?')) return;
+              onClick={async () => {
+                if (!(await askConfirm('Restablecer toda la configuración a los valores por defecto (sin objetivos).', { okText: 'Restablecer', danger: true }))) return;
                 e.replaceConfig(createDefaultConfig());
                 e.scenarioId = 'blank';
                 e.resetRuntime(undefined, false);

@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { exportText } from '../dialog';
 import { useEngine } from '../context';
-import { Card, Chip, SEVERITY_LABEL, downloadText, severityTone } from '../components/common';
+import { Card, Chip, SEVERITY_LABEL, severityTone } from '../components/common';
 import type { EventCategory } from '../../core/types';
 import { formatSimTime } from '../../core/util';
 
@@ -25,7 +26,7 @@ export function LogView() {
           <button
             className="btn small"
             onClick={() =>
-              downloadText(
+              exportText(
                 'alarmas.csv',
                 csv([
                   ['id', 'codigo', 'severidad', 'origen', 'mensaje', 'causa', 'accion', 'activada', 'normalizada', 'reconocida'],
@@ -37,7 +38,7 @@ export function LogView() {
           >
             Exportar alarmas CSV
           </button>
-          <button className="btn small" onClick={() => downloadText('eventos.csv', csv([['t', 'categoria', 'origen', 'mensaje'], ...e.log.events.map((ev) => [formatSimTime(ev.t), ev.category, ev.source, ev.message])]), 'text/csv')}>
+          <button className="btn small" onClick={() => exportText('eventos.csv', csv([['t', 'categoria', 'origen', 'mensaje'], ...e.log.events.map((ev) => [formatSimTime(ev.t), ev.category, ev.source, ev.message])]), 'text/csv')}>
             Exportar eventos CSV
           </button>
         </div>

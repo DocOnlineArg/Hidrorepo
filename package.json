@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:firmware": "bash firmware/esp32/test/run_native.sh"
+    "test:firmware": "bash firmware/esp32/test/run_native.sh",
+    "build:published": "node scripts/build-published.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

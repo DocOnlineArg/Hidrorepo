@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
+import { askConfirm } from '../dialog';
 import { useEngine } from '../context';
 import { Card, Check, Chip, Field, NumInput, Reasons, TextInput } from '../components/common';
 import { Esp32WsBackend } from '../../hal/esp32Ws';
 import { PIN_MAP } from '../../hal/pinmap';
 import { OUTPUT_IDS, PUMP_IDS } from '../../core/types';
 import { formatDuration } from '../../core/util';
+
+/** true en la versión publicada como página (sin acceso a WebSocket). */
+const PUBLISHED = import.meta.env.VITE_PUBLISHED === '1';
 
 const CHECKLIST = [
   'Las sondas analógicas usan su circuito de acondicionamiento/aislamiento; ninguna sonda va directa a un GPIO.',
@@ -52,23 +56,28 @@ export function HardwareView() {
             </Field>
             <button
               className={`btn ${e.hardware.kind === 'esp32-ws' ? 'on' : ''}`}
-              disabled={!url || token.length < 8}
+              disabled={PUBLISHED || !url || token.length < 8}
               title={token.length < 8 ? 'Introduzca el token que la ESP32 muestra por el puerto serie' : undefined}
-              onClick={() => {
-                if (!confirm('Seleccionar una ESP32 FÍSICA. Las salidas seguirán desarmadas hasta la habilitación explícita. ¿Continuar?')) return;
+              onClick={async () => {
+                if (!(await askConfirm('Seleccionar una ESP32 FÍSICA. Las salidas seguirán desarmadas hasta la habilitación explícita.', { okText: 'Usar ESP32 real' }))) return;
                 e.attachBackend(new Esp32WsBackend(url!, token));
               }}
             >
               ESP32 real (WebSocket)
             </button>
           </div>
+          {PUBLISHED && (
+            <div className="note warn">
+              Esta es la versión publicada para usar desde el navegador: funciona la simulación y el hardware simulado, pero no puede conectarse a una ESP32 real. Para conectar la placa, ejecute el dashboard en su computadora con <span className="mono">npm run dev</span>.
+            </div>
+          )}
           <small>
             El token nunca se envía por la red: la ESP32 manda un desafío aleatorio y el dashboard responde con HMAC-SHA256. El token no se guarda en el navegador.
           </small>
           <small>El hardware simulado emula una ESP32 (enlace, telemetría, armado, watchdog y corte por tiempo máximo) acoplada al modelo físico.</small>
           <div className="row">
             {e.mode !== 'hardware' ? (
-              <button className="btn primary" onClick={() => confirm('Entrar en modo hardware (salidas desarmadas)?') && e.setMode('hardware')}>
+              <button className="btn primary" onClick={async () => (await askConfirm('Entrar en modo hardware con las salidas desarmadas.', { okText: 'Entrar' })) && e.setMode('hardware')}>
                 Entrar en modo hardware
               </button>
             ) : (
@@ -249,8 +258,8 @@ function DeviceConfigCard() {
         <button
           className="btn small"
           disabled={!usable || e.link.armed || !ssid}
-          onClick={() => {
-            if (!confirm(`Guardar la red "${ssid}" en la ESP32? Se usará en el próximo reinicio; si no conecta, la placa vuelve al punto de acceso HidroTwin.`)) return;
+          onClick={async () => {
+            if (!(await askConfirm(`Guardar la red "${ssid}" en la ESP32. Se usará en el próximo reinicio; si no conecta, la placa vuelve al punto de acceso HidroTwin.`, { okText: 'Guardar' }))) return;
             e.hardware.sendConfig({ wifi: { ssid, pass } });
             setPass('');
             setSent(true);

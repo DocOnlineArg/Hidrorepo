@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DialogHost, askConfirm, showMessage } from './dialog';
 import { useEngine, SPEEDS } from './context';
 import type { SystemMode } from '../core/types';
 import { formatSimTime } from '../core/util';
@@ -56,6 +57,7 @@ export function App() {
 
   return (
     <div className="app">
+      <DialogHost />
       <header className="topbar">
         <div className="brand">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
@@ -68,8 +70,8 @@ export function App() {
         <div className="group">
           <Seg<SystemMode>
             value={e.mode}
-            onChange={(m) => {
-              if (m === 'hardware' && !confirm('Modo hardware: los sensores se leerán del backend seleccionado (hardware simulado por defecto). Las salidas permanecen DESARMADAS hasta la habilitación explícita. ¿Continuar?')) return;
+            onChange={async (m) => {
+              if (m === 'hardware' && !(await askConfirm('Modo hardware: los sensores se leerán del backend seleccionado (hardware simulado por defecto). Las salidas permanecen DESARMADAS hasta la habilitación explícita.', { okText: 'Entrar en modo hardware' }))) return;
               e.setMode(m);
             }}
             options={[
@@ -155,7 +157,7 @@ export function App() {
               className="btn small"
               onClick={() => {
                 const v = e.resetSafeState();
-                if (!v.ok) alert('No se puede restablecer:\n' + v.reasons.join('\n'));
+                if (!v.ok) showMessage('No se puede restablecer:\n' + v.reasons.join('\n'));
               }}
             >
               Restablecer estado seguro

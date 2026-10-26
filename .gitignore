@@ -5,3 +5,4 @@ firmware/esp32/.pio/
 firmware/esp32/test/native/build/
 *.log
 .DS_Store
+dist-published/

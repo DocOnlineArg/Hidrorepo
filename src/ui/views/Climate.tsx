@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { showMessage } from '../dialog';
 import { useEngine } from '../context';
 import { Card, Check, Chip, Field, NumInput, Seg, TextInput } from '../components/common';
 import { Chart } from '../components/Chart';
@@ -70,7 +71,7 @@ export function ClimateView() {
           <Check
             checked={c.allowHumDehumSimultaneous}
             onChange={(v) => {
-              if (v && c.simultaneousJustification.trim().length < 5) return alert('Escriba primero una justificación (mín. 5 caracteres).');
+              if (v && c.simultaneousJustification.trim().length < 5) return void showMessage('Escriba primero una justificación (mín. 5 caracteres).');
               e.updateConfig((x) => (x.climate.allowHumDehumSimultaneous = v), `Simultaneidad humidificador/deshumidificador ${v ? 'PERMITIDA' : 'prohibida'}`);
             }}
           >

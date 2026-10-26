@@ -5,8 +5,17 @@ import { App } from './App';
 import { EngineProvider } from './context';
 import { Engine } from '../core/engine';
 import { LocalStorageStore } from '../core/persistence';
+import { loadScenario } from '../core/scenarios';
 
-const engine = new Engine({ store: new LocalStorageStore() });
+const store = new LocalStorageStore();
+const firstVisit = store.load() === null;
+const engine = new Engine({ store });
+// Versión publicada: la primera visita abre la demostración en marcha.
+if (import.meta.env.VITE_PUBLISHED === '1' && firstVisit) {
+  loadScenario(engine, 'demo');
+  engine.speed = 60;
+  engine.running = true;
+}
 // Exposición para depuración desde la consola del navegador.
 (window as unknown as { hydro: Engine }).hydro = engine;
 
